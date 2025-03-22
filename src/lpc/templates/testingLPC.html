@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="eng">
 	<head>
-		<title>"Multilayer Perceptron Neural Network"</title>
+		<title>"LPC Vocoder"</title>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<style type="text/css">
@@ -168,6 +168,13 @@
 				margin-right: 10px;
 			}
 
+			.speechparam {
+				float: left;
+				text-align: right;
+				width: 200px;
+				margin-right: 10px;
+			}
+
 			#vocabulary-container {
 				display: flex;
 				flex-direction: row;
@@ -183,13 +190,7 @@
 		</style>
 	</head>
 	<body>
-		<h3>Multilayer Perceptron Neural Network Testing</h3>
-		<nav>
-			<ul>
-				<li class="links"><a href="http://127.0.0.1:8080/speechLPCtest">Test</a></li>
-				<li class="links"><a href="http://127.0.0.1:8080/speechspectrogram">Spectrogram</a></li>
-			</ul>
-		</nav>
+		<h3>LPC Vocoder Testing</h3>
 		<p><b>{{.Domain}}</b></p>
 		<div id="outer-container">
 			<div id="ylabel-container">
@@ -213,41 +214,8 @@
 				<form action="http://127.0.0.1:8080/speechLPCtest" method="post">
 					<fieldset>
 						<div class="options">
-							<table>
-								<tr>
-									<td>Epochs:</td>
-									<td>{{.Epochs}}</td>
-									<td>Learning Rate:</td>
-									<td>{{.LearningRate}}</td>
-								<tr>
-									<td>Momentum:</td>
-									<td>{{.Momentum}}</td>
-									<td>Layer Depth:</td>
-									<td>{{.LayerDepth}}</td>
-								</tr>
-								<tr>
-									<td>Hidden Layers:</td>
-									<td>{{.HiddenLayers}}</td>
-									<td>Classes:</td>
-									<td>{{.Classes}}</td>
-								</tr>
-								</tr>
-								<tr>
-									<td>Word Window (ms):</td>
-									<td>{{.WordWindow}}</td>
-									<td>Threshold (dB):</td>
-									<td>{{.Threshold}}</td>
-								</tr>
-								<tr>
-									<td>FFT Size:</td>
-									<td>{{.FFTSize}}</td>
-									<td>FFT Window:</td>
-									<td>{{.FFTWindow}}</td>
-								</tr>
-							</table>
 							<input type="checkbox" id="newspeech" name="speech" value="new" />
 							<label for="newspeech">New Speech</label>
-							Spectrum:
 							<input type="checkbox" id="wordsonly" name="wordsonly" value="wordsonly"/>
 							<label for="wordsonly">Words Only</label>
 							<input type="checkbox" id="lpc" name="lpc" value="lpc" />
@@ -274,9 +242,8 @@
 									<option value="40">40 dB</option>
 								</select>
 							</div>
-							<br />
 							<div>
-								<label for="wordwindow" class="speechparam">Word Window(ms):</label>
+								<label for="wordwindow" class="speechparam">Window(ms):</label>
 								<select id="wordwindow" name="wordwindow" required>
 									<option value="" selected>... Enter Window (ms) ...</option>
 									<option value="40">40 ms</option>
@@ -288,7 +255,6 @@
 									<option value="100">100 ms</option>
 								</select>
 							</div>
-							<br />
 							<hr />
 							<h3>Frequency Domain Parameters</h3>
 							<p>Enter frequency domain configuration.  FFTs are averaged with 50% overlap.
@@ -311,6 +277,7 @@
 							<select id="fftsize" name="fftsize" required>
 								<option value="256" selected>256</option>
 							</select>
+							<hr />
 							<h3>LPC Vocoder Parameters</h3>
 							<p>
 								Choose FIR prediction order.  This is the number of coefficients in the filter.
@@ -318,8 +285,9 @@
 								The speech is non-stationary so the speech is broken up into blocks and each 
 								block is modeled and used to predict the input speech.
 							</p>
-							<label for="predictorororder">Predictor Order(8-20):</label>
+							<label for="predictorororder" class="speechparam">Predictor Order(8-20):</label>
 							<input type="number" min="8" max="20" name="predictororder" id="predictororder" />
+							<br />
 							<label for="framesize" class="speechparam">Frame Size(ms):</label>
 							<select id="framesize" name="framesize">
 								<option value="" selected>... Enter Frame Size (ms) ...</option>
@@ -333,12 +301,7 @@
 						<input type="text" size="100px" id="status" name="status" value="{{.Status}}" readonly />
 					</fieldset>
 				</form>
-				<p><b>Academic Subject:</b>{{.TestResults}}</p>
-				<h3>******************* Vocabulary *******************</h3>
-				<div id="vocabulary-container">
-					{{range .Vocabulary}}
-						<div class="vocabulary">{{.}}</div>
-					{{end}}
-				</div>
 			</div>
 		</div>
+	</body>
+</html>

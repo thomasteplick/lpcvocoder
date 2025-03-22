@@ -11,6 +11,7 @@ import (
 	"log"
 	"math"
 	"math/cmplx"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/exec"
@@ -24,23 +25,22 @@ import (
 )
 
 const (
-	addr                  = "127.0.0.1:8080"             // http server listen address
-	fileTestingLPC        = "templates/testingLPC.html"  // html for testing LPC
-	fileSpectrogram       = "templates/spectrogram.html" // html for speech time or spectrogram plots
-	patternSpectrogram    = "/speechspectrogram"         // http handler for speech spectrogram
-	patternTestingVocoder                                // http handler for LPC Vocoder testing
-	dataDir               = "data/"                      // directory for the weights and audio wav files
-	xlabels               = 11                           // # labels on x axis
-	ylabels               = 11                           // # labels on y axis
-	rows                  = 300                          // rows in canvas
-	cols                  = 300                          // columns in canvas
-	sampleRate            = 8000                         // Hz or samples/sec
-	maxSamples            = 10000                        // max audio wav samples = 1.158 sec * sampleRate
-	twoPi                 = 2.0 * math.Pi                // 2Pi
-	bitDepth              = 16                           // audio wav encoder/decoder sample size
-	ncolors               = 5                            // number of grayscale colors in spectrogram
-	speechTestWav         = "speech.wav"                 // Test speech wav file
-	speechPredWav         = "speechPred.wav"             // Synthesized speech wav file
+	addr                  = "127.0.0.1:8080"            // http server listen address
+	fileTestingLPC        = "templates/testingLPC.html" // html for testing LPC
+	patternSpectrogram    = "/speechspectrogram"        // http handler for speech spectrogram
+	patternTestingVocoder = "/speechLPCtest"            // http handler for LPC Vocoder testing
+	dataDir               = "data/"                     // directory for the weights and audio wav files
+	xlabels               = 11                          // # labels on x axis
+	ylabels               = 11                          // # labels on y axis
+	rows                  = 300                         // rows in canvas
+	cols                  = 300                         // columns in canvas
+	sampleRate            = 8000                        // Hz or samples/sec
+	maxSamples            = 10000                       // max audio wav samples = 1.158 sec * sampleRate
+	twoPi                 = 2.0 * math.Pi               // 2Pi
+	bitDepth              = 16                          // audio wav encoder/decoder sample size
+	ncolors               = 5                           // number of grayscale colors in spectrogram
+	speechTestWav         = "speech.wav"                // Test speech wav file
+	speechPredWav         = "speechPred.wav"            // Synthesized speech wav file
 )
 
 // Type to contain all the HTML template actions
@@ -60,12 +60,6 @@ type Endpoints struct {
 	ymax float64
 }
 
-// training examples
-type Sample struct {
-	name      string    // audio wav file name
-	grayscale []float64 // spectrogram grayscale
-}
-
 type Bound struct {
 	start, stop int // word boundaries in the message
 }
@@ -81,10 +75,10 @@ type Vocoder struct {
 	file       string
 	pitch      int       // frequency of the frame for voiced
 	predSpeech []float64 // modeled output
-	speech     []float64 // input
-	plot       *PlotT    // data to be distributed in the HTML template
-	Endpoints            // embedded struct
-	samples    []Sample
+	// silence  bool     // mute the audio
+	speech     []float64      // input
+	plot       *PlotT         // data to be distributed in the HTML template
+	Endpoints                 // embedded struct
 	nsamples   int            // number of audio wav samples
 	wordWindow int            // message word window to accumulate audio level
 	dbLevel    int            // message word audio level to determine start
@@ -101,9 +95,8 @@ type Window func(n int, m int) complex128
 
 // global variables for parse and execution of the html template
 var (
-	tmplTestingLPC  *template.Template
-	tmplSpectrogram *template.Template
-	winType         = []string{"Bartlett", "Welch", "Hamming", "Hanning", "Rectangle"}
+	tmplTestingLPC *template.Template
+	winType        = []string{"Bartlett", "Welch", "Hamming", "Hanning", "Rectangle"}
 )
 
 // Bartlett window
@@ -137,7 +130,6 @@ func rectangle(n int, m int) complex128 {
 // init parses the html template files
 func init() {
 	tmplTestingLPC = template.Must(template.ParseFiles(fileTestingLPC))
-	tmplSpectrogram = template.Must(template.ParseFiles(fileSpectrogram))
 }
 
 // newVocoder constructs a Vocoder instance
@@ -145,7 +137,7 @@ func newVocoder(r *http.Request, plot *PlotT) (*Vocoder, error) {
 	// Read the LPC vocoder parameters in the HTML Form
 	txt := r.FormValue("wordwindow")
 	if len(txt) == 0 {
-		return nil, fmt.Errorf("select Threshold and Window from the lists")
+		return nil, fmt.Errorf("select Threshold and Window from the Speech Parameter lists")
 	}
 	window, err := strconv.Atoi(txt)
 	if err != nil {
@@ -155,7 +147,7 @@ func newVocoder(r *http.Request, plot *PlotT) (*Vocoder, error) {
 
 	txt = r.FormValue("threshold")
 	if len(txt) == 0 {
-		return nil, fmt.Errorf("select Threshold and Window from the lists")
+		return nil, fmt.Errorf("select Threshold and Window from the Speech Parameter lists")
 	}
 	dbLevel, err := strconv.Atoi(txt)
 	if err != nil {
@@ -178,6 +170,7 @@ func newVocoder(r *http.Request, plot *PlotT) (*Vocoder, error) {
 		dbLevel:    dbLevel,
 		fftSize:    fftSize,
 		fftWindow:  fftWindow,
+		plot:       plot,
 	}
 
 	// Determine if LPC Vocoder processing is wanted and run analysis/synthesis on speech
@@ -186,7 +179,7 @@ func newVocoder(r *http.Request, plot *PlotT) (*Vocoder, error) {
 
 		txt := r.FormValue("framesize")
 		if len(txt) == 0 {
-			return nil, fmt.Errorf("Enter frame size for LPC Vocoder")
+			return nil, fmt.Errorf("enter frame size and/or predictior order for LPC Vocoder")
 		}
 		frameSize, err := strconv.Atoi(txt)
 		if err != nil {
@@ -198,7 +191,7 @@ func newVocoder(r *http.Request, plot *PlotT) (*Vocoder, error) {
 		txt = r.FormValue("predictororder")
 		if len(txt) == 0 {
 			fmt.Println("Enter predictor order for LPC Vocoder")
-			return nil, fmt.Errorf("Enter predictor order for LPC Vocoder")
+			return nil, fmt.Errorf("enter predictor order for LPC Vocoder")
 		}
 		predOrder, err := strconv.Atoi(txt)
 		if err != nil {
@@ -209,30 +202,13 @@ func newVocoder(r *http.Request, plot *PlotT) (*Vocoder, error) {
 		vcdr.file = filepath.Join(dataDir, speechTestWav)
 		vcdr.frameSize = frameSize
 		vcdr.predOrder = predOrder
+		vcdr.R = make([]float64, frameSize/2)
+		// leading coefficient a[0][0] and a[1][0] = 1.0 and not used
+		vcdr.a[0] = make([]float64, predOrder+1)
+		vcdr.a[1] = make([]float64, predOrder+1)
+
 	}
 	return &vcdr, nil
-}
-
-// insertLabels inserts x- an y-axis labels in the plot
-func (vcdr *Vocoder) insertLabels() {
-	vcdr.plot.Xlabel = make([]string, xlabels)
-	vcdr.plot.Ylabel = make([]string, ylabels)
-	// Construct x-axis labels
-	incr := (vcdr.xmax - vcdr.xmin) / (xlabels - 1)
-	x := vcdr.xmin
-	// First label is empty for alignment purposes
-	for i := range vcdr.plot.Xlabel {
-		vcdr.plot.Xlabel[i] = fmt.Sprintf("%.2f", x)
-		x += incr
-	}
-
-	// Construct the y-axis labels
-	incr = (vcdr.ymax - vcdr.ymin) / (ylabels - 1)
-	y := vcdr.ymin
-	for i := range vcdr.plot.Ylabel {
-		vcdr.plot.Ylabel[i] = fmt.Sprintf("%.2f", y)
-		y += incr
-	}
 }
 
 // Welch's Method and Bartlett's Method variation of the Periodogram
@@ -397,8 +373,181 @@ func (vcdr *Vocoder) normalizeAudio(audio []float64, nsamples int) error {
 	return nil
 }
 
+// determinePitch decides if the frame speech is voiced or unvoiced and the pitch if voiced
+func (vcdr *Vocoder) determinePitch() error {
+	sum := 0.0
+	cur := 0
+	count := 0
+	vcdr.pitch = 0
+	npk := 0
+	pk := 0.0
+	const delta = 2.0
+	// Find first peak
+	for i := cur + 1; i < vcdr.frameSize/2; i++ {
+		if vcdr.R[i] > pk {
+			npk = i
+			pk = vcdr.R[i]
+		}
+	}
+	sum += float64(npk - cur)
+	count++
+	vcdr.pitch = int(sum / float64(count))
+	cur = npk
+	// Find any remaining peaks if enough samples are left
+done:
+	for (vcdr.frameSize/2 - cur) > vcdr.pitch {
+		pk = 0.0
+		for i := cur + 1; i < vcdr.frameSize/2; i++ {
+			if vcdr.R[i] > pk {
+				npk = i
+				pk = vcdr.R[i]
+			}
+		}
+		// Determine if the same period is found
+		if pk > 0 && (math.Abs(float64(npk-cur)) <= delta) {
+			sum += float64(npk - cur)
+			count++
+			vcdr.pitch = int(sum / float64(count))
+			cur = npk
+			// this peak has a different period than the average
+		} else {
+			if count < 2 {
+				vcdr.pitch = 0
+			}
+			break done
+		}
+	}
+	return nil
+}
+
+// genModel generates the FIR predictor coefficients and the Gain
+func (vcdr *Vocoder) genModel() error {
+	E := vcdr.R[0]
+	p := vcdr.predOrder
+	cur := 1
+	prev := 0
+	for i := 1; i <= p; i++ {
+		k := vcdr.R[i]
+		for j := 1; j < i; j++ {
+			k -= vcdr.a[prev][j] * vcdr.R[i-j]
+		}
+		k /= E
+		vcdr.a[cur][i] = k
+		for j := 1; j < i; j++ {
+			vcdr.a[cur][j] = vcdr.a[prev][j] - k*vcdr.a[prev][i-j]
+		}
+		E = (1.0 - k*k) * E
+		cur, prev = prev, cur
+	}
+	vcdr.G = math.Sqrt(E)
+	return nil
+}
+
+// gemAutoCorr generates the autocorrelation of the input speech
+func (vcdr *Vocoder) genAutoCorr(frame int) error {
+	n := frame * vcdr.frameSize
+	for k := 0; k < vcdr.frameSize/2; k++ {
+		sum := 0.0
+		for m := 0; m < vcdr.frameSize-k; m++ {
+			sum += vcdr.speech[n+m] * vcdr.speech[n+m+k]
+		}
+		vcdr.R[k] = sum
+	}
+	return nil
+}
+
+// creates a model for the speech consisting of predictor coefficients and gain G
+func (vcdr *Vocoder) analyze(frame int) error {
+
+	/*
+		Check for silence by finding word boundaries.  If the frame beginning or frame
+		ending is not within any word boudary, then set silence to true.  Skip the rest
+		of analysis.  In synchesize, set predSignal to zero for the frame.
+	*/
+
+	// Compute autocorrelation R for frame size / 2 lags
+	err := vcdr.genAutoCorr(frame)
+	if err != nil {
+		fmt.Printf("vcdr.genAutoCorr error: %v\n", err.Error())
+		return fmt.Errorf("vcdr.genAutoCorr error: %v", err.Error())
+	}
+
+	// Compute predictor coefficients and Gain using Levinson-Durbin recursion to
+	// solve the Yule-Walker equations
+	err = vcdr.genModel()
+	if err != nil {
+		fmt.Printf("vcdr.genModel error: %v\n", err.Error())
+		return fmt.Errorf("vcdr.genModel error: %v", err.Error())
+	}
+
+	// Determine if voiced or unvoiced excitation using autocorrelation R
+	// Determine pitch if voiced using the autocorrelation R
+	err = vcdr.determinePitch()
+	if err != nil {
+		fmt.Printf("vcdr.determinePitch error: %v\n", err.Error())
+		return fmt.Errorf("vcdr.determinePitch error: %v", err.Error())
+	}
+
+	return nil
+}
+
+// synthesize creates estimated speech using the predictor coefficients and Gain
+// found in analysis
+func (vcdr *Vocoder) synthesize(frame int) error {
+	// Using the predictor coefficents a[k] and gain G found in analyze, synthesize speech
+	// for the given frame samples.  y(n) = sum{a(k)*y(n-k)} + G*u(n)
+	// The excitation u(n) is either an impulse with pitch period or white noise (voiced or unvoiced)
+
+	// Check for silence and set vcdr.predSpeech[] to zero for this frame
+
+	n := frame * vcdr.frameSize
+	u := 0.0
+	sum := 0.0
+	// Determine which coefficient slice has the final order p since
+	// it is toggling back and force in genModel
+	k := vcdr.predOrder % 2
+	if n == 0 {
+		for i := n; i < vcdr.predOrder; i++ {
+			if vcdr.pitch > 0 {
+				if (i % vcdr.pitch) == 0 {
+					u = vcdr.G * 1.0
+				} else {
+					u = 0.0
+				}
+			} else {
+				u = vcdr.G * (rand.Float64() - 0.5)
+			}
+			sum = u
+			for j := 1; j <= i; j++ {
+				sum += vcdr.a[k][j] * vcdr.predSpeech[i-j]
+			}
+			vcdr.predSpeech[i] = sum
+		}
+		n += vcdr.predOrder
+	}
+	// Continue from last sample above
+	for i := n; i < n+vcdr.frameSize; i++ {
+		// voiced speech uses an impulse with pitch period
+		if vcdr.pitch > 0 {
+			if (i % vcdr.pitch) == 0 {
+				u = vcdr.G * 1.0
+			} else {
+				u = 0.0
+			}
+		} else {
+			u = vcdr.G * (rand.Float64() - 0.5)
+		}
+		sum = u
+		for j := 1; j <= vcdr.predOrder; j++ {
+			sum += vcdr.a[k][j] * vcdr.predSpeech[i-j]
+		}
+		vcdr.predSpeech[i] = sum
+	}
+	return nil
+}
+
 // Perform analysis and synthesis of the input speech signal in frameSize blocks
-func (vcdr *Vocoder) ProcessSpeech(fileName string, frameSize int, predOrder int) error {
+func (vcdr *Vocoder) processSpeech(fileName string) error {
 
 	// open speech WAV file and convert 16-bit samples to []float64
 	// Open the testing message
@@ -421,10 +570,11 @@ func (vcdr *Vocoder) ProcessSpeech(fileName string, frameSize int, predOrder int
 	}
 	vcdr.speech = bufInt.AsFloatBuffer().Data
 	vcdr.predSpeech = make([]float64, nsamples)
-	//fmt.Printf("%s samples = %d\n", filename, nsamples)
+	fmt.Printf("%s input samples = %d, ", fileName, nsamples)
 
 	// loop over frames: #samples/frameSize
 	nframes := nsamples / vcdr.frameSize
+	fmt.Printf("nframes = %d\n", nframes)
 	for frame := 0; frame < nframes; frame++ {
 		err := vcdr.analyze(frame)
 		if err != nil {
@@ -438,19 +588,19 @@ func (vcdr *Vocoder) ProcessSpeech(fileName string, frameSize int, predOrder int
 		}
 	}
 
-	// Create new wav file: save synthesized speech msgPredWav to disk
+	// Create new wav file: save synthesized speech speechPredWav to disk
 	outF, err := os.Create(path.Join(dataDir, speechPredWav))
 	if err != nil {
 		fmt.Printf("os.Create() file %s error: %v\n", speechPredWav, err)
 		return fmt.Errorf("os.Create() file %s error: %v", speechPredWav, err)
 	}
 	defer outF.Close()
-
 	// create wav.Encoder
 	enc := wav.NewEncoder(outF, sampleRate, bitDepth, 1, 1)
 
 	// create audio.FloatBuffer
 	float64Buf := &audio.FloatBuffer{Data: vcdr.predSpeech, Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate}}
+	fmt.Printf("predicted speech len = %d\n", len(vcdr.predSpeech))
 
 	// create IntBuffer from FloatBuffer and pass to Encoder.Write()
 	if err := enc.Write(float64Buf.AsIntBuffer()); err != nil {
@@ -525,7 +675,7 @@ func handleTestingVocoder(w http.ResponseWriter, r *http.Request) {
 	if len(lpc) > 0 {
 
 		// Perform LPC Vocoder processing consisting of analysis and synthesis of the speech
-		err = vcdr.ProcessSpeech(speechPredWav, vcdr.frameSize, vcdr.predOrder)
+		err = vcdr.processSpeech(speechTestWav)
 		if err != nil {
 			fmt.Printf("lpc.ProcessSpeech error: %v\n", err)
 			plot.Status = fmt.Sprintf("lpc.ProcessSpeech error: %s", err.Error())
@@ -911,225 +1061,12 @@ func (vcdr *Vocoder) processSpectrogram(filename, fftWindow string, wordsOnly bo
 	return nil
 }
 
-// Create a spectrogram of the speech waveform
-func handleSpectrogram(w http.ResponseWriter, r *http.Request) {
-	var (
-		plot       PlotT
-		vcdr       *Vocoder
-		wordWindow int  = 0
-		wordsOnly  bool = false
-	)
-
-	// Determine operation to perform on the speech waveform:  play, add, delete
-	wordOp := r.FormValue("wordop")
-	if wordOp == "play" {
-		filename := r.FormValue("fileplaydelete")
-		if len(filename) == 0 {
-			fmt.Println("Enter filename for playing the word")
-			plot.Status = "Enter filename for playing the word"
-			// Write to HTTP using template and grid
-			if err := tmplSpectrogram.Execute(w, plot); err != nil {
-				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-			}
-			return
-		}
-		audiowavdir := r.FormValue("audiowavdir")
-		if len(audiowavdir) == 0 {
-			fmt.Println("Enter directory for the audio wav file")
-			plot.Status = "Enter director for the audio wav file"
-			// Write to HTTP using template and grid
-			if err := tmplSpectrogram.Execute(w, plot); err != nil {
-				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-			}
-			return
-		}
-
-		// Determine if time or spectrogram domain plot
-		domain := r.FormValue("domain")
-		if domain == "spectrogram" {
-			plot.Domain = "Spectrogram (Hz/sec)"
-		} else {
-			plot.Domain = "Time Domain (sec)"
-		}
-
-		if domain == "time" {
-			vcdr = &Vocoder{plot: &plot}
-			err := vcdr.processTimeDomain(filepath.Join(audiowavdir, filename))
-			if err != nil {
-				fmt.Printf("processTimeDomain error: %v\n", err)
-				plot.Status = fmt.Sprintf("processTimeDomain error: %v", err.Error())
-				// Write to HTTP using template and grid
-				if err := tmplSpectrogram.Execute(w, plot); err != nil {
-					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-				}
-				return
-			}
-			plot.Status += fmt.Sprintf("Time Domain of %s plotted.", filepath.Join(dataDir, audiowavdir, filename))
-			// Spectrogram Domain
-		} else {
-			fftWindow := r.FormValue("fftwindow")
-
-			txt := r.FormValue("fftsize")
-			fftSize, err := strconv.Atoi(txt)
-			if err != nil {
-				fmt.Printf("fftsize int conversion error: %v\n", err)
-				plot.Status = fmt.Sprintf("fftsize int conversion error: %s", err.Error())
-				// Write to HTTP using template and grid
-				if err := tmplSpectrogram.Execute(w, plot); err != nil {
-					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-				}
-				return
-			}
-
-			if len(r.FormValue("wordsonly")) > 0 {
-				wordsOnly = true
-				txt := r.FormValue("wordwindow")
-				if len(txt) == 0 {
-					fmt.Println("Word window not defined for spectrogram  domain")
-					plot.Status = "Word window not defined for spectrogram  domain"
-					// Write to HTTP using template and grid
-					if err := tmplSpectrogram.Execute(w, plot); err != nil {
-						log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-					}
-					return
-				}
-				wordWindow, err = strconv.Atoi(txt)
-				if err != nil {
-					fmt.Printf("Conversion to int for 'wordwindow' error: %v\n", err)
-					plot.Status = "Conversion to int for 'window' error"
-					// Write to HTTP using template and grid
-					if err := tmplSpectrogram.Execute(w, plot); err != nil {
-						log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-					}
-					return
-				}
-			}
-
-			vcdr = &Vocoder{plot: &plot, wordWindow: wordWindow, fftSize: fftSize}
-			vcdr.grayscale = make(map[int]string)
-			for i := 0; i < ncolors; i++ {
-				vcdr.grayscale[i] = fmt.Sprintf("gs%d", i)
-			}
-
-			err = vcdr.processSpectrogram(filepath.Join(audiowavdir, filename), fftWindow, wordsOnly, fftSize)
-			if err != nil {
-				fmt.Printf("processSpectrogram error: %v\n", err)
-				plot.Status = fmt.Sprintf("processSpectrogram error: %v", err.Error())
-				// Write to HTTP using template and grid
-				if err := tmplSpectrogram.Execute(w, plot); err != nil {
-					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-				}
-				return
-			}
-			plot.Status += fmt.Sprintf("Spectrogram of %s plotted.", filepath.Join(dataDir, audiowavdir, filename))
-		}
-
-		// Play the audio wav if fmedia is available in the PATH environment variable
-		fmedia, err := exec.LookPath("fmedia.exe")
-		if err != nil {
-			log.Fatal("fmedia is not available in PATH")
-		} else {
-			fmt.Printf("fmedia is available in path: %s\n", fmedia)
-			cmd := exec.Command(fmedia, filepath.Join(dataDir, audiowavdir, filename))
-			stdoutStderr, err := cmd.CombinedOutput()
-			if err != nil {
-				fmt.Printf("stdout, stderr error from running fmedia: %v\n", err)
-
-			} else {
-				fmt.Printf("fmedia output: %s\n", string(stdoutStderr))
-			}
-		}
-	} else if wordOp == "new" {
-		vcdr = &Vocoder{plot: &plot}
-		filename := r.FormValue("filenew")
-		if len(filename) == 0 {
-			fmt.Println("Enter filename for the new word")
-			plot.Status = "Enter filename for the new word"
-			// Write to HTTP using template and grid
-			if err := tmplSpectrogram.Execute(w, plot); err != nil {
-				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-			}
-			return
-		}
-		fmedia, err := exec.LookPath("fmedia.exe")
-		if err != nil {
-			log.Fatal("fmedia is not available in PATH")
-		} else {
-			fmt.Printf("fmedia is available in path: %s\n", fmedia)
-			// filename includes the audiowav folder; eg.,  audiowavX/cat.wav, were X = 0, 1, 2, ...
-			cmd := exec.Command(fmedia, "--record", "-o", filepath.Join(dataDir, filename), "--until=5",
-				"--format=int16", "--channels=mono", "--rate=8000", "-y", "--start-dblevel=-70", "--stop-dblevel=-20;1")
-			stdoutStderr, err := cmd.CombinedOutput()
-			if err != nil {
-				fmt.Printf("stdout, stderr error from running fmedia: %v\n", err)
-				plot.Status = fmt.Sprintf("stdout, stderr error from running fmedia: %v", err.Error())
-				// Write to HTTP using template and grid
-				if err := tmplSpectrogram.Execute(w, plot); err != nil {
-					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-				}
-				return
-			} else {
-				fmt.Printf("fmedia output: %s\n", string(stdoutStderr))
-			}
-		}
-		// delete
-	} else if wordOp == "delete" {
-		vcdr = &Vocoder{plot: &plot}
-		filename := r.FormValue("fileplaydelete")
-		if len(filename) == 0 {
-			fmt.Println("Enter filename for deleting the word from the vocabulary")
-			plot.Status = "Enter filename for deleting the word from the vocabulary"
-			// Write to HTTP using template and grid
-			if err := tmplSpectrogram.Execute(w, plot); err != nil {
-				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-			}
-			return
-		}
-		audiowavdir := r.FormValue("audiowavdir")
-		if len(audiowavdir) == 0 {
-			fmt.Println("Enter directory for the audio wav file")
-			plot.Status = "Enter directory for the audio wav file"
-			// Write to HTTP using template and grid
-			if err := tmplSpectrogram.Execute(w, plot); err != nil {
-				log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-			}
-			return
-		}
-		if filepath.Ext(filename) == ".wav" {
-			if err := os.Remove(path.Join(dataDir, audiowavdir, filename)); err != nil {
-				plot.Status = fmt.Sprintf("Remove %s error: %v", filename, err)
-				// Write to HTTP using template and grid
-				if err := tmplSpectrogram.Execute(w, plot); err != nil {
-					log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-				}
-				return
-			}
-		}
-	} else {
-		fmt.Println("Enter spectrogram parameters.")
-		plot.Status = "Enter spectrogram parameters"
-		// Write to HTTP using template and grid
-		if err := tmplSpectrogram.Execute(w, plot); err != nil {
-			log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-		}
-		return
-	}
-
-	// Execute data on HTML template
-	if err := tmplSpectrogram.Execute(w, vcdr.plot); err != nil {
-		log.Fatalf("Write to HTTP output using template with error: %v\n", err)
-	}
-
-}
-
 // executive creates the HTTP handlers, listens on addr, and serves the HTML
 func main() {
 	// Set up HTTP servers with handlers for testing the LPC Vocoder
 
 	// Create HTTP handler for LPC Vocoder testing
 	http.HandleFunc(patternTestingVocoder, handleTestingVocoder)
-	// Create HTTP handler for spectrogram generation
-	http.HandleFunc(patternSpectrogram, handleSpectrogram)
 	fmt.Printf("LPC Vocoder Server listening on %v.\n", addr)
 	http.ListenAndServe(addr, nil)
 }

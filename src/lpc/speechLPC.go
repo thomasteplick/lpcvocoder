@@ -348,7 +348,7 @@ func (vcdr *Vocoder) findWords(filename string) error {
 		}
 		j++
 	}
-	fmt.Printf("in findWords, speech length = %d, bounds = %v, avg = %f, max = %f\n", len(data), vcdr.bounds, avg, max)
+	//fmt.Printf("in findWords, speech length = %d, bounds = %v, avg = %.2f, max = %.2f\n", len(data), vcdr.bounds, avg, max)
 	return nil
 }
 
@@ -536,19 +536,18 @@ func (vcdr *Vocoder) processSpeech() error {
 	// find words in wav file
 	if vcdr.wordsOnly && len(vcdr.bounds) == 0 {
 		err := vcdr.findWords(speechTestWav)
-		fmt.Println("findWords called")
 		if err != nil {
 			fmt.Printf("findWords error: %v", err)
 			return fmt.Errorf("findWords error: %s", err.Error())
 		}
 	}
-	fmt.Printf("word boundaries:%v\n", vcdr.bounds)
+	//fmt.Printf("word boundaries:%v\n", vcdr.bounds)
 
 	// loop over frames: #samples/frameSize
 	nframes := vcdr.nsamples / vcdr.frameSize
 	inboundsSamples := 0
-	fmt.Printf("nframes = %d\n", nframes)
-	fmt.Println("in bounds samples")
+	//fmt.Printf("nframes = %d\n", nframes)
+	//fmt.Println("in bounds samples")
 	for frame := 0; frame < nframes; frame++ {
 		/*
 			Check for silence by finding word boundaries.  If the frame beginning or frame
@@ -563,7 +562,7 @@ func (vcdr *Vocoder) processSpeech() error {
 			if vcdr.inBoundsSample(n, vcdr.frameSize/2) {
 				vcdr.silence = false
 				inboundsSamples++
-				fmt.Printf("%d ", frame)
+				//fmt.Printf("%d ", frame)
 			}
 		}
 
@@ -578,7 +577,7 @@ func (vcdr *Vocoder) processSpeech() error {
 			return fmt.Errorf("ProcessSpeech synthesize error %v", err.Error())
 		}
 	}
-	fmt.Printf("\nIn bounds frames = %d\n", inboundsSamples)
+	//fmt.Printf("\nIn bounds frames = %d\n", inboundsSamples)
 
 	// Create new wav file: save synthesized speech speechPredWav to disk
 	outF, err := os.Create(path.Join(dataDir, speechPredWav))

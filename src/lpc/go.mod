@@ -1,4 +1,4 @@
-module github.com/thomasteplick/speechMsgMLP
+module github.com/thomasteplick/speechLPCvocoder
 
 go 1.23.4
 

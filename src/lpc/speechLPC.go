@@ -66,16 +66,16 @@ type Bound struct {
 
 // Primary data structure for holding the LPC Vocoder state
 type Vocoder struct {
-	frameSize int          // number of samples
-	predOrder int          // number of coefficients in predictor
-	a         [2][]float64 // previous order and current order predictor coefficients
-	G         float64      // Gain
-	R         []float64    // autocorrelation of speech
-	// silence bool         // mute the predicted speech
+	frameSize  int          // number of samples
+	predOrder  int          // number of coefficients in predictor
+	a          [2][]float64 // previous order and current order predictor coefficients
+	G          float64      // Gain
+	R          []float64    // autocorrelation of speech
 	file       string
-	pitch      int       // frequency of the frame for voiced
-	predSpeech []float64 // modeled output
-	// silence  bool     // mute the audio
+	pitch      int            // frequency of the frame for voiced
+	predSpeech []float64      // modeled output
+	silence    bool           // mute the audio if no speech
+	wordsOnly  bool           // check for presence of words in the audio
 	speech     []float64      // input
 	plot       *PlotT         // data to be distributed in the HTML template
 	Endpoints                 // embedded struct
@@ -83,11 +83,10 @@ type Vocoder struct {
 	wordWindow int            // message word window to accumulate audio level
 	dbLevel    int            // message word audio level to determine start
 	domain     string         // time or spectrogram plot
-	audioMean  float64        // audio samples mean
-	audioMax   float64        // audio samples maximum
 	grayscale  map[int]string // grayscale for spectrogram
 	fftSize    int            // FFT size for spectrogram
 	fftWindow  string         // FFT window
+	bounds     []Bound        // word boundaries in the audio
 }
 
 // Window function type
@@ -164,6 +163,11 @@ func newVocoder(r *http.Request, plot *PlotT) (*Vocoder, error) {
 		return nil, err
 	}
 
+	wordsOnly := false
+	if len(r.FormValue("wordsonly")) > 0 {
+		wordsOnly = true
+	}
+
 	// new Vocoder object
 	vcdr := Vocoder{
 		wordWindow: window,
@@ -171,7 +175,10 @@ func newVocoder(r *http.Request, plot *PlotT) (*Vocoder, error) {
 		fftSize:    fftSize,
 		fftWindow:  fftWindow,
 		plot:       plot,
+		silence:    true,
+		wordsOnly:  wordsOnly,
 	}
+	vcdr.bounds = make([]Bound, 0)
 
 	// Determine if LPC Vocoder processing is wanted and run analysis/synthesis on speech
 	lpc := r.FormValue("lpc")
@@ -206,7 +213,6 @@ func newVocoder(r *http.Request, plot *PlotT) (*Vocoder, error) {
 		// leading coefficient a[0][0] and a[1][0] = 1.0 and not used
 		vcdr.a[0] = make([]float64, predOrder+1)
 		vcdr.a[1] = make([]float64, predOrder+1)
-
 	}
 	return &vcdr, nil
 }
@@ -268,25 +274,28 @@ func (vcdr *Vocoder) calculatePSD(audio []float64, PSD []float64, fftWindow stri
 	return psdAvg / float64(m), psdMax, nil
 }
 
-// findWords finds the word boundaries in the testing message
-func (vcdr *Vocoder) findWords(data []float64) ([]Bound, error) {
+// findWords finds the word boundaries in the speech
+func (vcdr *Vocoder) findWords(filename string) error {
 
 	// prevent oscillation about threshold
 	const hystersis = 0.8
+	var data []float64 = vcdr.speech
+	if filename == speechPredWav {
+		data = vcdr.predSpeech
+	}
 
 	var (
-		old    float64 = 0.0
-		new    float64 = 0.0
-		cur    int     = 0
-		start  int     = 0
-		stop   int     = 0
-		sum    float64 = 0.0
-		k      int     = 0
-		j      int     = 0
-		L      int     = vcdr.nsamples
-		max    float64 = 0.0
-		bounds []Bound = make([]Bound, 0)
-		avg    float64 = 0.0
+		old   float64 = 0.0
+		new   float64 = 0.0
+		cur   int     = 0
+		start int     = 0
+		stop  int     = 0
+		sum   float64 = 0.0
+		k     int     = 0
+		j     int     = 0
+		L     int     = vcdr.nsamples
+		max   float64 = 0.0
+		avg   float64 = 0.0
 	)
 
 	// Find the maximum and normalize the data
@@ -316,7 +325,7 @@ func (vcdr *Vocoder) findWords(data []float64) ([]Bound, error) {
 			cur = (cur + 1) % win
 			if k >= stop+win && sum > levelSum {
 				start = k - win
-				bounds = append(bounds, Bound{start: start})
+				vcdr.bounds = append(vcdr.bounds, Bound{start: start})
 				k++
 				break
 			}
@@ -331,7 +340,7 @@ func (vcdr *Vocoder) findWords(data []float64) ([]Bound, error) {
 			cur = (cur + 1) % win
 			if k > start+win && sum < levelSum*hystersis {
 				stop = k
-				bounds[j].stop = stop
+				vcdr.bounds[j].stop = stop
 				k++
 				break
 			}
@@ -339,37 +348,7 @@ func (vcdr *Vocoder) findWords(data []float64) ([]Bound, error) {
 		}
 		j++
 	}
-
-	return bounds, nil
-}
-
-// normalizeAudio removes the mean and constrains the values to (-1,1)
-func (vcdr *Vocoder) normalizeAudio(audio []float64, nsamples int) error {
-
-	// find the mean and remove it from audio
-	sum := 0.0
-	for i := 0; i < nsamples; i++ {
-		sum += audio[i]
-	}
-	mean := sum / float64(nsamples)
-	max := -math.MaxFloat64
-
-	// remove the mean and find the maximum
-	for i := 0; i < nsamples; i++ {
-		audio[i] -= mean
-		mag := math.Abs(audio[i])
-		if mag > max {
-			max = mag
-		}
-	}
-	vcdr.audioMean = mean
-	vcdr.audioMax = max
-
-	// normalize the audio to (-1, 1)
-	for i := 0; i < nsamples; i++ {
-		audio[i] /= max
-	}
-
+	fmt.Printf("in findWords, speech length = %d, bounds = %v, avg = %f, max = %f\n", len(data), vcdr.bounds, avg, max)
 	return nil
 }
 
@@ -459,11 +438,9 @@ func (vcdr *Vocoder) genAutoCorr(frame int) error {
 // creates a model for the speech consisting of predictor coefficients and gain G
 func (vcdr *Vocoder) analyze(frame int) error {
 
-	/*
-		Check for silence by finding word boundaries.  If the frame beginning or frame
-		ending is not within any word boudary, then set silence to true.  Skip the rest
-		of analysis.  In synchesize, set predSignal to zero for the frame.
-	*/
+	if vcdr.silence {
+		return nil
+	}
 
 	// Compute autocorrelation R for frame size / 2 lags
 	err := vcdr.genAutoCorr(frame)
@@ -499,15 +476,22 @@ func (vcdr *Vocoder) synthesize(frame int) error {
 	// The excitation u(n) is either an impulse with pitch period or white noise (voiced or unvoiced)
 
 	// Check for silence and set vcdr.predSpeech[] to zero for this frame
+	start := frame * vcdr.frameSize
+	end := start + vcdr.frameSize
+	if vcdr.silence {
+		for i := start; i < end; i++ {
+			vcdr.predSpeech[i] = 0.0
+		}
+		return nil
+	}
 
-	n := frame * vcdr.frameSize
 	u := 0.0
 	sum := 0.0
 	// Determine which coefficient slice has the final order p since
 	// it is toggling back and force in genModel
 	k := vcdr.predOrder % 2
-	if n == 0 {
-		for i := n; i < vcdr.predOrder; i++ {
+	if start == 0 {
+		for i := start; i < vcdr.predOrder; i++ {
 			if vcdr.pitch > 0 {
 				if (i % vcdr.pitch) == 0 {
 					u = vcdr.G * 1.0
@@ -523,10 +507,10 @@ func (vcdr *Vocoder) synthesize(frame int) error {
 			}
 			vcdr.predSpeech[i] = sum
 		}
-		n += vcdr.predOrder
+		start += vcdr.predOrder
 	}
 	// Continue from last sample above
-	for i := n; i < n+vcdr.frameSize; i++ {
+	for i := start; i < start+vcdr.frameSize; i++ {
 		// voiced speech uses an impulse with pitch period
 		if vcdr.pitch > 0 {
 			if (i % vcdr.pitch) == 0 {
@@ -547,35 +531,42 @@ func (vcdr *Vocoder) synthesize(frame int) error {
 }
 
 // Perform analysis and synthesis of the input speech signal in frameSize blocks
-func (vcdr *Vocoder) processSpeech(fileName string) error {
+func (vcdr *Vocoder) processSpeech() error {
 
-	// open speech WAV file and convert 16-bit samples to []float64
-	// Open the testing message
-	f, err := os.Open(filepath.Join(dataDir, fileName))
-	if err != nil {
-		fmt.Printf("Open file %s error: %v", fileName, err)
-		return fmt.Errorf("open file %s error: %s", fileName, err.Error())
+	// find words in wav file
+	if vcdr.wordsOnly && len(vcdr.bounds) == 0 {
+		err := vcdr.findWords(speechTestWav)
+		fmt.Println("findWords called")
+		if err != nil {
+			fmt.Printf("findWords error: %v", err)
+			return fmt.Errorf("findWords error: %s", err.Error())
+		}
 	}
-	defer f.Close()
-
-	// Create wav Decoder, intBuf, fltBuf and Decode the wav file
-	dec := wav.NewDecoder(f)
-	bufInt := audio.IntBuffer{
-		Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate},
-		Data:   make([]int, 2*maxSamples), SourceBitDepth: bitDepth}
-	nsamples, err := dec.PCMBuffer(&bufInt)
-	if err != nil {
-		fmt.Printf("PCMBuffer error: %v\n", err)
-		return fmt.Errorf("PCMBuffer error: %v", err.Error())
-	}
-	vcdr.speech = bufInt.AsFloatBuffer().Data
-	vcdr.predSpeech = make([]float64, nsamples)
-	fmt.Printf("%s input samples = %d, ", fileName, nsamples)
+	fmt.Printf("word boundaries:%v\n", vcdr.bounds)
 
 	// loop over frames: #samples/frameSize
-	nframes := nsamples / vcdr.frameSize
+	nframes := vcdr.nsamples / vcdr.frameSize
+	inboundsSamples := 0
 	fmt.Printf("nframes = %d\n", nframes)
+	fmt.Println("in bounds samples")
 	for frame := 0; frame < nframes; frame++ {
+		/*
+			Check for silence by finding word boundaries.  If the frame beginning or frame
+			ending is within any word boudary, then set silence to false.  If silence is
+			true skip the rest of analysis. In synchesize, set predSignal to zero for the frame.
+		*/
+		if !vcdr.wordsOnly {
+			vcdr.silence = false
+		} else {
+			vcdr.silence = true
+			n := frame * vcdr.frameSize
+			if vcdr.inBoundsSample(n, vcdr.frameSize/2) {
+				vcdr.silence = false
+				inboundsSamples++
+				fmt.Printf("%d ", frame)
+			}
+		}
+
 		err := vcdr.analyze(frame)
 		if err != nil {
 			fmt.Printf("ProcessSpeech analyze error: %v\n", err)
@@ -587,6 +578,7 @@ func (vcdr *Vocoder) processSpeech(fileName string) error {
 			return fmt.Errorf("ProcessSpeech synthesize error %v", err.Error())
 		}
 	}
+	fmt.Printf("\nIn bounds frames = %d\n", inboundsSamples)
 
 	// Create new wav file: save synthesized speech speechPredWav to disk
 	outF, err := os.Create(path.Join(dataDir, speechPredWav))
@@ -600,7 +592,6 @@ func (vcdr *Vocoder) processSpeech(fileName string) error {
 
 	// create audio.FloatBuffer
 	float64Buf := &audio.FloatBuffer{Data: vcdr.predSpeech, Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate}}
-	fmt.Printf("predicted speech len = %d\n", len(vcdr.predSpeech))
 
 	// create IntBuffer from FloatBuffer and pass to Encoder.Write()
 	if err := enc.Write(float64Buf.AsIntBuffer()); err != nil {
@@ -627,10 +618,9 @@ func handleTestingVocoder(w http.ResponseWriter, r *http.Request) {
 	// Option to plot spectrogram output added.
 
 	var (
-		plot      PlotT
-		vcdr      *Vocoder
-		err       error
-		wordsOnly bool = false
+		plot PlotT
+		vcdr *Vocoder
+		err  error
 	)
 
 	// Construct LPC Vocoder instance containing vocoder state
@@ -670,12 +660,45 @@ func handleTestingVocoder(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// open speech WAV file and convert 16-bit samples to []float64
+	// Open the testing message
+	f, err := os.Open(filepath.Join(dataDir, speechTestWav))
+	if err != nil {
+		fmt.Printf("Open file %s error: %v", speechTestWav, err)
+		plot.Status = fmt.Sprintf("Open file %s error: %v", speechTestWav, err)
+		// Write to HTTP using template and grid
+		if err := tmplTestingLPC.Execute(w, plot); err != nil {
+			log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+		}
+		return
+	}
+	defer f.Close()
+
+	// Create wav Decoder, intBuf, fltBuf and Decode the wav file
+	dec := wav.NewDecoder(f)
+	bufInt := audio.IntBuffer{
+		Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate},
+		Data:   make([]int, 2*maxSamples), SourceBitDepth: bitDepth}
+	nsamples, err := dec.PCMBuffer(&bufInt)
+	if err != nil {
+		fmt.Printf("PCMBuffer error: %v\n", err)
+		plot.Status = fmt.Sprintf("PCMBuffer error: %v\n", err)
+		// Write to HTTP using template and grid
+		if err := tmplTestingLPC.Execute(w, plot); err != nil {
+			log.Fatalf("Write to HTTP output using template with error: %v\n", err)
+		}
+		return
+	}
+	vcdr.speech = bufInt.AsFloatBuffer().Data
+	vcdr.predSpeech = make([]float64, nsamples)
+	vcdr.nsamples = nsamples
+
 	// Determine if LPC Vocoder processing is wanted and run analysis/synthesis on speech
 	lpc := r.FormValue("lpc")
 	if len(lpc) > 0 {
 
 		// Perform LPC Vocoder processing consisting of analysis and synthesis of the speech
-		err = vcdr.processSpeech(speechTestWav)
+		err = vcdr.processSpeech()
 		if err != nil {
 			fmt.Printf("lpc.ProcessSpeech error: %v\n", err)
 			plot.Status = fmt.Sprintf("lpc.ProcessSpeech error: %s", err.Error())
@@ -699,15 +722,13 @@ func handleTestingVocoder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if vcdr.domain == "spectrogram" {
-		if len(r.FormValue("wordsonly")) > 0 {
-			wordsOnly = true
-		}
+		vcdr.plot.Domain = "Spectrogram (Hz/sec)"
 		vcdr.grayscale = make(map[int]string)
 		for i := 0; i < ncolors; i++ {
 			vcdr.grayscale[i] = fmt.Sprintf("gs%d", i)
 		}
 
-		err = vcdr.processSpectrogram(file, vcdr.fftWindow, wordsOnly, vcdr.fftSize)
+		err = vcdr.processSpectrogram(file, vcdr.fftWindow, vcdr.fftSize)
 		if err != nil {
 			fmt.Printf("proessSpectrogram error: %v\n", err)
 			plot.Status = fmt.Sprintf("processSpectrogram error: %v", err.Error())
@@ -719,6 +740,7 @@ func handleTestingVocoder(w http.ResponseWriter, r *http.Request) {
 		}
 		plot.Status = "Spectrogram plotted."
 	} else {
+		vcdr.plot.Domain = "Time Domain (sec)"
 		err := vcdr.processTimeDomain(file)
 		if err != nil {
 			fmt.Printf("processTimeDomain error: %v\n", err)
@@ -775,103 +797,85 @@ func (vcdr *Vocoder) processTimeDomain(filename string) error {
 		xscale    float64
 		yscale    float64
 		endpoints Endpoints
+		data      []float64 = vcdr.speech
 	)
 
 	vcdr.plot.Grid = make([]string, rows*cols)
 	vcdr.plot.Xlabel = make([]string, xlabels)
 	vcdr.plot.Ylabel = make([]string, ylabels)
 
-	// Open the audio wav file
-	f, err := os.Open(filepath.Join(dataDir, filename))
-	if err == nil {
-		defer f.Close()
-		dec := wav.NewDecoder(f)
-		bufInt := audio.IntBuffer{
-			Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate},
-			Data:   make([]int, 2*maxSamples), SourceBitDepth: bitDepth}
-		n, err := dec.PCMBuffer(&bufInt)
-		if err != nil {
-			fmt.Printf("PCMBuffer error: %v\n", err)
-			return fmt.Errorf("PCMBuffer error: %v", err.Error())
-		}
-		bufFlt := bufInt.AsFloatBuffer()
-		//fmt.Printf("%s samples = %d\n", filename, n)
-		vcdr.nsamples = n
+	if filename == speechPredWav {
+		data = vcdr.predSpeech
+	}
 
-		endpoints.findEndpoints(bufFlt.Data)
-		// time starts at 0 and ends at #samples*sampling period
-		endpoints.xmin = 0.0
-		// #samples*sampling period, sampling period = 1/sampleRate
-		endpoints.xmax = float64(vcdr.nsamples) / float64(sampleRate)
+	endpoints.findEndpoints(data)
+	// time starts at 0 and ends at #samples*sampling period
+	endpoints.xmin = 0.0
+	// #samples*sampling period, sampling period = 1/sampleRate
+	endpoints.xmax = float64(vcdr.nsamples) / float64(sampleRate)
 
-		// EP means endpoints
-		lenEPx := endpoints.xmax - endpoints.xmin
-		lenEPy := endpoints.ymax - endpoints.ymin
-		prevTime := 0.0
-		prevAmpl := bufFlt.Data[0]
+	// EP means endpoints
+	lenEPx := endpoints.xmax - endpoints.xmin
+	lenEPy := endpoints.ymax - endpoints.ymin
+	prevTime := 0.0
+	prevAmpl := data[0]
 
-		// Calculate scale factors for x and y
-		xscale = float64(cols-1) / (endpoints.xmax - endpoints.xmin)
-		yscale = float64(rows-1) / (endpoints.ymax - endpoints.ymin)
+	// Calculate scale factors for x and y
+	xscale = float64(cols-1) / (endpoints.xmax - endpoints.xmin)
+	yscale = float64(rows-1) / (endpoints.ymax - endpoints.ymin)
 
-		// This previous cell location (row,col) is on the line (visible)
-		row := int((endpoints.ymax-bufFlt.Data[0])*yscale + .5)
-		col := int((0.0-endpoints.xmin)*xscale + .5)
+	// This previous cell location (row,col) is on the line (visible)
+	row := int((endpoints.ymax-data[0])*yscale + .5)
+	col := int((0.0-endpoints.xmin)*xscale + .5)
+	vcdr.plot.Grid[row*cols+col] = "online"
+
+	// Store the amplitude in the plot Grid
+	for n := 1; n < vcdr.nsamples; n++ {
+		// Current time
+		currTime := float64(n) / float64(sampleRate)
+
+		// This current cell location (row,col) is on the line (visible)
+		row := int((endpoints.ymax-data[n])*yscale + .5)
+		col := int((currTime-endpoints.xmin)*xscale + .5)
 		vcdr.plot.Grid[row*cols+col] = "online"
 
-		// Store the amplitude in the plot Grid
-		for n := 1; n < vcdr.nsamples; n++ {
-			// Current time
-			currTime := float64(n) / float64(sampleRate)
+		// Interpolate the points between previous point and current point;
+		// draw a straight line between points.
+		lenEdgeTime := math.Abs((currTime - prevTime))
+		lenEdgeAmpl := math.Abs(data[n] - prevAmpl)
+		ncellsTime := int(float64(cols) * lenEdgeTime / lenEPx) // number of points to interpolate in x-dim
+		ncellsAmpl := int(float64(rows) * lenEdgeAmpl / lenEPy) // number of points to interpolate in y-dim
+		// Choose the biggest
+		ncells := ncellsTime
+		if ncellsAmpl > ncells {
+			ncells = ncellsAmpl
+		}
 
-			// This current cell location (row,col) is on the line (visible)
-			row := int((endpoints.ymax-bufFlt.Data[n])*yscale + .5)
-			col := int((currTime-endpoints.xmin)*xscale + .5)
+		stepTime := float64(currTime-prevTime) / float64(ncells)
+		stepAmpl := float64(data[n]-prevAmpl) / float64(ncells)
+
+		// loop to draw the points
+		interpTime := prevTime
+		interpAmpl := prevAmpl
+		for i := 0; i < ncells; i++ {
+			row := int((endpoints.ymax-interpAmpl)*yscale + .5)
+			col := int((interpTime-endpoints.xmin)*xscale + .5)
+			// This cell location (row,col) is on the line (visible)
 			vcdr.plot.Grid[row*cols+col] = "online"
-
-			// Interpolate the points between previous point and current point;
-			// draw a straight line between points.
-			lenEdgeTime := math.Abs((currTime - prevTime))
-			lenEdgeAmpl := math.Abs(bufFlt.Data[n] - prevAmpl)
-			ncellsTime := int(float64(cols) * lenEdgeTime / lenEPx) // number of points to interpolate in x-dim
-			ncellsAmpl := int(float64(rows) * lenEdgeAmpl / lenEPy) // number of points to interpolate in y-dim
-			// Choose the biggest
-			ncells := ncellsTime
-			if ncellsAmpl > ncells {
-				ncells = ncellsAmpl
-			}
-
-			stepTime := float64(currTime-prevTime) / float64(ncells)
-			stepAmpl := float64(bufFlt.Data[n]-prevAmpl) / float64(ncells)
-
-			// loop to draw the points
-			interpTime := prevTime
-			interpAmpl := prevAmpl
-			for i := 0; i < ncells; i++ {
-				row := int((endpoints.ymax-interpAmpl)*yscale + .5)
-				col := int((interpTime-endpoints.xmin)*xscale + .5)
-				// This cell location (row,col) is on the line (visible)
-				vcdr.plot.Grid[row*cols+col] = "online"
-				interpTime += stepTime
-				interpAmpl += stepAmpl
-			}
-
-			// Update the previous point with the current point
-			prevTime = currTime
-			prevAmpl = bufFlt.Data[n]
-
+			interpTime += stepTime
+			interpAmpl += stepAmpl
 		}
 
-		// Set plot status if no errors
-		if len(vcdr.plot.Status) == 0 {
-			vcdr.plot.Status = fmt.Sprintf("file %s plotted from (%.3f,%.3f) to (%.3f,%.3f)",
-				filename, endpoints.xmin, endpoints.ymin, endpoints.xmax, endpoints.ymax)
-		}
+		// Update the previous point with the current point
+		prevTime = currTime
+		prevAmpl = data[n]
 
-	} else {
-		// Set plot status
-		fmt.Printf("Error opening file %s: %v\n", filename, err)
-		return fmt.Errorf("error opening file %s: %v", filename, err)
+	}
+
+	// Set plot status if no errors
+	if len(vcdr.plot.Status) == 0 {
+		vcdr.plot.Status = fmt.Sprintf("file %s plotted from (%.3f,%.3f) to (%.3f,%.3f)",
+			filename, endpoints.xmin, endpoints.ymin, endpoints.xmax, endpoints.ymax)
 	}
 
 	// Construct x-axis labels
@@ -895,9 +899,8 @@ func (vcdr *Vocoder) processTimeDomain(filename string) error {
 }
 
 // inBoundsSample checks if the sample is inside word boundaries
-func (vcdr *Vocoder) inBoundsSample(smpl int, bounds []Bound) bool {
-	margin := vcdr.fftSize / 2
-	for _, bound := range bounds {
+func (vcdr *Vocoder) inBoundsSample(smpl int, margin int) bool {
+	for _, bound := range vcdr.bounds {
 		if smpl > (bound.start-margin) && smpl < (bound.stop-margin) {
 			return true
 		}
@@ -906,7 +909,7 @@ func (vcdr *Vocoder) inBoundsSample(smpl int, bounds []Bound) bool {
 }
 
 // processSpectrogram creates a spectrogram of the speech waveform
-func (vcdr *Vocoder) processSpectrogram(filename, fftWindow string, wordsOnly bool, fftSize int) error {
+func (vcdr *Vocoder) processSpectrogram(filename, fftWindow string, fftSize int) error {
 
 	// get audio samples from audio wav file
 	// open and read the audio wav file
@@ -916,8 +919,13 @@ func (vcdr *Vocoder) processSpectrogram(filename, fftWindow string, wordsOnly bo
 		PSD       []float64 // power spectral density
 		xscale    float64   // data to grid in x direction
 		yscale    float64   // data to grid in y direction
-		bounds    []Bound   // word boundaries in the audio
+		data      []float64 = vcdr.speech
 	)
+
+	fftSize2 := vcdr.fftSize / 2
+	if filename == speechPredWav {
+		data = vcdr.predSpeech
+	}
 
 	vcdr.plot.Grid = make([]string, rows*cols)
 	vcdr.plot.Xlabel = make([]string, xlabels)
@@ -925,115 +933,95 @@ func (vcdr *Vocoder) processSpectrogram(filename, fftWindow string, wordsOnly bo
 
 	// Power Spectral Density, PSD[N/2] is the Nyquist critical frequency
 	// It is (sampling frequency)/2, the highest non-aliased frequency
-	PSD = make([]float64, fftSize/2)
+	PSD = make([]float64, fftSize2)
 
-	// Open the audio wav file
-	f, err := os.Open(filepath.Join(dataDir, filename))
-	if err == nil {
-		defer f.Close()
-		dec := wav.NewDecoder(f)
-		bufInt := audio.IntBuffer{
-			Format: &audio.Format{NumChannels: 1, SampleRate: sampleRate},
-			Data:   make([]int, 2*maxSamples), SourceBitDepth: bitDepth}
-		n, err := dec.PCMBuffer(&bufInt)
+	// x-axis is time or sample, y-axis is frequency
+	endpoints.xmin = 0.0
+	endpoints.xmax = float64(vcdr.nsamples)
+	endpoints.ymin = 0.0
+	endpoints.ymax = float64(fftSize2) // equivalent to Nyquist critical frequency
+
+	// Calculate scale factors to convert physical units to screen units
+	xscale = float64(cols-1) / (endpoints.xmax - endpoints.xmin)
+	yscale = float64(rows-1) / (endpoints.ymax - endpoints.ymin)
+
+	// number of cells to interpolate in time and frequency
+	// round up so the cells in the plot grid are connected
+	ncellst := int((math.Ceil(float64(cols) * float64(fftSize2) / float64(vcdr.nsamples))))
+	ncellsf := int(math.Ceil(float64(rows) / float64(fftSize2)))
+
+	stepTime := float64((fftSize2) / ncellst)
+	stepFreq := 1.0 / float64(ncellsf)
+
+	// if wordsOnly, only do calculatePSD for samples inside the word boundaries to minimize
+	// checking the spectrum of noise.  This would give a broad range of frequencies which
+	// is not of interest.
+	if vcdr.wordsOnly && len(vcdr.bounds) == 0 {
+		// loop over fltBuf and find the speech bounds
+		err := vcdr.findWords(filename)
 		if err != nil {
-			fmt.Printf("PCMBuffer error: %v\n", err)
-			return fmt.Errorf("PCMBuffer error: %v", err.Error())
+			fmt.Printf("findWords error: %v", err)
+			return fmt.Errorf("findWords error: %s", err.Error())
 		}
-		bufFlt := bufInt.AsFloatBuffer()
-		//fmt.Printf("%s samples = %d\n", filename, n)
-		vcdr.nsamples = n
-		// x-axis is time or sample, y-axis is frequency
-		endpoints.xmin = 0.0
-		endpoints.xmax = float64(vcdr.nsamples)
-		endpoints.ymin = 0.0
-		endpoints.ymax = float64(fftSize / 2) // equivalent to Nyquist critical frequency
+	}
+	fmt.Printf("word boundaries:%v\n", vcdr.bounds)
 
-		// Calculate scale factors to convert physical units to screen units
-		xscale = float64(cols-1) / (endpoints.xmax - endpoints.xmin)
-		yscale = float64(rows-1) / (endpoints.ymax - endpoints.ymin)
-
-		// number of cells to interpolate in time and frequency
-		// round up so the cells in the plot grid are connected
-		ncellst := int((math.Ceil(float64(cols) * float64(fftSize/2) / float64(vcdr.nsamples))))
-		ncellsf := int(math.Ceil(float64(rows) / float64((fftSize / 2))))
-
-		stepTime := float64((fftSize / 2) / ncellst)
-		stepFreq := 1.0 / float64(ncellsf)
-
-		// if wordsOnly, only do calculatePSD for samples inside the word boundaries to minimize
-		// checking the spectrum of noise.  This would give a broad range of frequencies which
-		// is not of interest.
-		if wordsOnly {
-			// loop over fltBuf and find the speech bounds
-			bounds, err = vcdr.findWords(bufFlt.Data)
+	// for loop over samples, increment by fftSize/2, calculatePSD on the batch
+	// Overlap by 50% due to non-rectangular window to avoid Gibbs phenomenon
+	for smpl := 0; smpl < vcdr.nsamples; smpl += fftSize2 {
+		if !vcdr.wordsOnly || vcdr.inBoundsSample(smpl, fftSize2) {
+			// calculate the PSD using Bartlett's or Welch's variant of the Periodogram
+			end := smpl + fftSize
+			if end > vcdr.nsamples {
+				end = vcdr.nsamples
+			}
+			_, psdMax, err := vcdr.calculatePSD(data[smpl:end], PSD, fftWindow, fftSize)
 			if err != nil {
-				fmt.Printf("findWords error: %v", err)
-				return fmt.Errorf("findWords error: %s", err.Error())
+				fmt.Printf("calculatePSD error: %v\n", err)
+				return fmt.Errorf("calculatePSD error: %v", err.Error())
 			}
-		}
 
-		// for loop over samples, increment by fftSize/2, calculatePSD on the batch
-		// Overlap by 50% due to non-rectangular window to avoid Gibbs phenomenon
-		for smpl := 0; smpl < vcdr.nsamples; smpl += fftSize / 2 {
-			if !wordsOnly || vcdr.inBoundsSample(smpl, bounds) {
-				// calculate the PSD using Bartlett's or Welch's variant of the Periodogram
-				end := smpl + fftSize
-				if end > vcdr.nsamples {
-					end = vcdr.nsamples
+			// for loop over the frequency bins in the PSD
+			for bin := 0; bin < fftSize2; bin++ {
+				// find the grayscale color based on bin power
+				// largest power is black, smallest power is white
+				// shades of gray in-between black and white
+				var gs string
+				r := PSD[bin] / psdMax
+				if r < .1 {
+					gs = vcdr.grayscale[4]
+				} else if r < .25 {
+					gs = vcdr.grayscale[3]
+				} else if r < .5 {
+					gs = vcdr.grayscale[2]
+				} else if r < .8 {
+					gs = vcdr.grayscale[1]
+				} else {
+					gs = vcdr.grayscale[0]
 				}
-				_, psdMax, err := vcdr.calculatePSD(bufFlt.Data[smpl:end], PSD, fftWindow, fftSize)
-				if err != nil {
-					fmt.Printf("calculatePSD error: %v\n", err)
-					return fmt.Errorf("calculatePSD error: %v", err.Error())
-				}
 
-				// for loop over the frequency bins in the PSD
-				for bin := 0; bin < fftSize/2; bin++ {
-					// find the grayscale color based on bin power
-					// largest power is black, smallest power is white
-					// shades of gray in-between black and white
-					var gs string
-					r := PSD[bin] / psdMax
-					if r < .1 {
-						gs = vcdr.grayscale[4]
-					} else if r < .25 {
-						gs = vcdr.grayscale[3]
-					} else if r < .5 {
-						gs = vcdr.grayscale[2]
-					} else if r < .8 {
-						gs = vcdr.grayscale[1]
-					} else {
-						gs = vcdr.grayscale[0]
+				// interpolate in time
+				interpTime := float64(smpl)
+				for nct := 0; nct < ncellst; nct++ {
+					col := int((interpTime-endpoints.xmin)*xscale + .5)
+					if col >= cols {
+						col = cols - 1
 					}
-
-					// interpolate in time
-					interpTime := float64(smpl)
-					for nct := 0; nct < ncellst; nct++ {
-						col := int((interpTime-endpoints.xmin)*xscale + .5)
-						if col >= cols {
-							col = cols - 1
+					// interpolate in frequency
+					interpFreq := float64(bin)
+					for ncf := 0; ncf < ncellsf; ncf++ {
+						row := int((endpoints.ymax-interpFreq)*yscale + .5)
+						if row < 0 {
+							row = 0
 						}
-						// interpolate in frequency
-						interpFreq := float64(bin)
-						for ncf := 0; ncf < ncellsf; ncf++ {
-							row := int((endpoints.ymax-interpFreq)*yscale + .5)
-							if row < 0 {
-								row = 0
-							}
-							// Store the color in the plot Grid
-							vcdr.plot.Grid[row*cols+col] = gs
-							interpFreq += stepFreq
-						}
-						interpTime += stepTime
+						// Store the color in the plot Grid
+						vcdr.plot.Grid[row*cols+col] = gs
+						interpFreq += stepFreq
 					}
+					interpTime += stepTime
 				}
 			}
 		}
-	} else {
-		// Set plot status
-		fmt.Printf("Error opening file %s: %v\n", filename, err)
-		return fmt.Errorf("error opening file %s: %v", filename, err)
 	}
 
 	// Construct x-axis labels

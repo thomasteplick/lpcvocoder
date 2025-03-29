@@ -175,6 +175,12 @@
 				margin-right: 10px;
 			}
 
+			.lpcparam {
+				float: left;
+				text-align: right;
+				max-width: 200px;
+				margin-right: 10px;
+			}
 			#vocabulary-container {
 				display: flex;
 				flex-direction: row;
@@ -285,10 +291,10 @@
 								The speech is non-stationary so the speech is broken up into blocks and each 
 								block is modeled and used to predict the input speech.
 							</p>
-							<label for="predictorororder" class="speechparam">Predictor Order(8-20):</label>
+							<label for="predictorororder" class="lpcparam">Predictor Order:</label>
 							<input type="number" min="8" max="20" name="predictororder" id="predictororder" />
 							<br />
-							<label for="framesize" class="speechparam">Frame Size(ms):</label>
+							<label for="framesize" class="lpcparam">Frame Size(ms):</label>
 							<select id="framesize" name="framesize">
 								<option value="" selected>... Enter Frame Size (ms) ...</option>
 								<option value="10">10 ms</option>

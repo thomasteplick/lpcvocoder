@@ -1,3 +1,4 @@
+<h3>Configuration for Time, Frequency, and LPC Parameters</h3>
 <p>
 The checkbox <i>New speech</i> allows you to create a new wav file by speaking into
 the machine's microphone.  The checkbox <i>Words Only</i> will silence audio that 
@@ -9,43 +10,35 @@ through your machines audio system.  If LPC is not selected, the original speech
 be displayed and heard.  To hear the speech on your audio device, the <b>fmedia</b> program should
 be installed on your machine and the path inserted in your PATH environment variable.
 </p>
-
-<h3>Configuration</h3>
-
 <p>
 The radio button <i>Time Response</i> displays the time domain of either the speech or 
 synthesized speech wav file.  Yhe <i>Spectrogram</i> radio button displays frequency 
 versus time of the speech or synthesized speech.  Shades of gray signify the power
 present at that frequency; the darker the color, the greater the power at that frequency.
 </p>
-
 <p>
 For the Frequency Domain Parameters, select the window type for the Discrete Fourier 
 Transform and the size of the transform.  The FFT size is fixed at 256 and the window
 type should be Rectangle.
 </p>
-
 <p>
 For the Speech Parameters, the <i>Threshold</i> determines the audio amplitude at which
 speech is detected.  The <i>Window</i> is the integration time over which audio power
 is summed (energy) to determine if a word is present.  If enough energy is present in the window, 
 then a word is present.
 </p>
-
 <p>
 The LPC Vocoder Parameters has the <i>Predictor Order</i>, which is the number of coefficients
 used in the FIR predictor.  The <i>Frame Size</i> is the number of samples used to analyze 
 the speech and synthesize the audio.  The time in milliseconds is multiplied by the sample rate
 to give the number of samples to use.
 </p>
-
 <p>
 After the above selections are made, click Submit button and the program will display the selected
 waveform and you will hear the audio through your machine's audio system.
 </p>
-
 <h3>Speech Signal Processing</h3
-
+                              
 <b>Analysis</b>
 <p>
 The principle parts of Linear Prediction Coding are an analysis phase and a synthesis phase.  During

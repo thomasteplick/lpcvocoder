@@ -63,3 +63,15 @@ separate analysis and synthesis.  The synthesis filter is essentially the invers
 FIR predictor.  It is an all-pole filter with all poles inside the unit circle, hence it is stable.  The filter
 order determines the number of poles.
 </p>
+<h4>Time Domain Speech, "It's raining outside", original</h4>
+![image](https://github.com/user-attachments/assets/e3c0864b-83eb-40e9-a3d0-90fba4b207ac)
+<h4>Spectrogram, "It's raining outside", original</h4>
+![image](https://github.com/user-attachments/assets/99bb6b63-db7c-427f-a653-d00d64effc9a)
+<h4>Time Domain, Speech, "It's raining outside", synthesized</h4>
+![image](https://github.com/user-attachments/assets/05941d09-bd33-4c19-9f9c-97892b1a62e3)
+<h4>Spectrogram, "It's raining outside", synthesized</h4>
+![image](https://github.com/user-attachments/assets/af9d5342-5f52-42bd-a669-59d7307bec3d)
+
+
+
+
